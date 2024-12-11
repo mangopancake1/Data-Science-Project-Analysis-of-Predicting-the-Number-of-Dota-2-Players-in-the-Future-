@@ -1,0 +1,246 @@
+---
+title: "Tugas Akhir"
+author: "Abdan SM"
+date: '`r Sys.Date()`'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Import Library
+
+```{r}
+library(tidyverse)
+library(here)
+library(forecast)
+library(zoo)
+library(Metrics)
+library(caret)
+```
+
+
+## Import Data
+
+```{r}
+path = here("data_raw","dota2_chart.csv")
+data_dota2 = read.csv(path, sep=";")
+head(data_dota2)
+```
+
+
+## Pre-Processing Data
+
+ubah Kolom DateTime menjadi tipe data POSIXct, drop kolom Average.Players (terlalu banyak NA) cari nilai NA lainnya
+
+```{r}
+new_dota2 = data_dota2 %>%
+  mutate(DateTime = as.POSIXct(DateTime), Average.Players = NULL)
+which(is.na(new_dota2$Players))
+#head(new_dota2)
+```
+
+
+ganti nilai NA menggunakan forward filling
+
+```{r}
+clean_dota2 = na.locf(new_dota2)
+which(is.na(clean_dota2$Players))
+```
+
+Data memiliki record dengan rentang waktu yang berbeda-beda
+
+Kelompokkan data menjadi Peak data harian dan Peak data bulanan
+
+```{r}
+daily_dota2 = clean_dota2 %>% 
+    group_by(Date = lubridate::floor_date(DateTime, 'day')) %>%
+    summarize(Peak = max(Players))
+head(daily_dota2)
+```
+
+visualisasikan data harian
+
+```{r}
+ggplot(
+  data = daily_dota2,
+  aes(
+    x = Date,
+    y = Peak
+  )
+) + geom_line(color = "#36aed2") + theme_minimal() + labs(
+  title = "Data Harian Pemain Dota2",
+  x = "Tahun",
+  y = "Pemain"
+)
+```
+
+Kelompokkan data menjadi Peak data Bulanan
+
+```{r}
+monthly_dota2 = clean_dota2 %>% 
+    group_by(Date = lubridate::floor_date(DateTime, 'month')) %>%
+    summarize(Peak = max(Players))
+monthly_dota2
+```
+
+Visualisasikan data bulanan
+
+```{r}
+ggplot(
+  data = monthly_dota2,
+  aes(
+    x = Date,
+    y = Peak
+  )
+) + geom_line(color = "#36aed2", linewidth = 1 )+ geom_point(size = 1)  + theme_bw() + labs(
+  title = "Data Bulanan Pemain Dota2"
+)
+```
+
+## filter dan Scalling
+
+```{r}
+filtered_daily_dota2 = monthly_dota2 %>% filter(Date >= as.POSIXct("2011-01-01"))
+
+
+predict1 = preProcess(filtered_daily_dota2,method=c("range"))  
+scaled_daily_dota2 = predict(predict1,filtered_daily_dota2)
+scaled_daily_dota2
+```
+
+## Membagi Data menjadi Training dan Testing
+
+```{r}
+test_set_start_date <- as.POSIXct("2023-01-01")
+train_dota2 <- subset(scaled_daily_dota2, Date <= test_set_start_date)
+test_dota2 <- subset(scaled_daily_dota2, Date > test_set_start_date)
+
+dim(train_dota2)
+dim(test_dota2)
+```
+
+visualisasikan data yang sudah dibagi
+
+```{r}
+ggplot() +
+  geom_line(data = train_dota2, aes(x = Date, y = Peak, color = "Training"), size = 1) +
+  geom_line(data = test_dota2, aes(x = Date, y = Peak, color = "Testing"), size = 1) +
+  labs(
+    title = "Data Bulanan Pemain Dota2 - Training and Testing Sets",
+    x = "Date",
+    y = "Pemain"
+  ) +
+  scale_color_manual(values = c("Training" = "#12355B", "Testing" = "#D72638"), name = "Pemain Dota2") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 18))
+```
+
+konversi data training menjadi object Time Series
+
+```{r}
+ts_monthly_dota2 <- ts(train_dota2$Peak,start = c(2011,9), frequency = 12)
+ts_monthly_dota2
+```
+
+## Modelling
+
+forecast dengan Auto SArima lalu visualisasikan hasil
+
+```{r}
+arima_monthly_dota2 = auto.arima(ts_monthly_dota2, seasonal = TRUE)
+predict_arima_monthly_dota2 = forecast(arima_monthly_dota2, h = nrow(test_dota2))
+
+arima_monthly_dota2_df = data.frame(
+  Date = test_dota2$Date,
+  peak = predict_arima_monthly_dota2$mean
+)
+arima_monthly_dota2_df
+
+```
+
+```{r}
+autoplot(predict_arima_monthly_dota2)
+```
+
+```{r}
+ggplot() +
+  geom_line(data = train_dota2, aes(x = Date, y = Peak, color = "Training"), size = 1) +
+  geom_line(data = test_dota2, aes(x = Date, y = Peak, color = "Testing"), size = 1) +
+  geom_line(data = arima_monthly_dota2_df, aes(x = Date, y = peak, color = "Hasil_Training"), size = 1) +
+  labs(
+    title = "Data Bulanan Pemain Dota2",
+    x = "Date",
+    y = "Pemain"
+  ) +
+  scale_color_manual(values = c("Training" = "#12355B", "Testing" = "#D72638", "Hasil_Training" = "#f7a500"), name = "Pemain Dota2") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 18))
+```
+
+## Evaluasi
+
+```{r}
+evaluasi_dota2 = data.frame(
+  Date = test_dota2$Date,
+  ARIMA = predict_arima_monthly_dota2$mean,
+  Testing = test_dota2$Peak
+)
+nilai_mae = mae(evaluasi_dota2$Testing,evaluasi_dota2$ARIMA)
+nilai_rmse = rmse(evaluasi_dota2$Testing,evaluasi_dota2$ARIMA)
+nilai_mape = mape(evaluasi_dota2$Testing,evaluasi_dota2$ARIMA)
+
+metrics_arima_monthly_dota2 = data.frame(
+  MAE = nilai_mae,
+  MAPE = nilai_mape,
+  RMSE = nilai_rmse
+)
+metrics_arima_monthly_dota2
+```
+```{r}
+# Load library yang diperlukan
+library(shiny)
+library(ggplot2)
+
+
+
+# Define UI
+ui <- fluidPage(
+  titlePanel("Data Bulanan Pemain Dota2"),
+  sidebarLayout(
+    sidebarPanel(
+      p("Visualisasi data pemain Dota2.")
+    ),
+    mainPanel(
+      plotOutput("dota2Plot") # Output plot akan ditampilkan di sini
+    )
+  )
+)
+
+# Define Server
+server <- function(input, output) {
+  output$dota2Plot <- renderPlot({
+    ggplot() +
+      geom_line(data = train_dota2, aes(x = Date, y = Peak, color = "Training"), size = 1) +
+      geom_line(data = test_dota2, aes(x = Date, y = Peak, color = "Testing"), size = 1) +
+      geom_line(data = arima_monthly_dota2_df, aes(x = Date, y = peak, color = "Prediksi"), size = 1) +
+      labs(
+        title = "Data Bulanan Pemain Dota2",
+        x = "Date",
+        y = "Pemain"
+      ) +
+      scale_color_manual(
+        values = c("Training" = "#12355B", "Testing" = "#D72638", "Prediksi" = "#f7a500"),
+        name = "Pemain Dota2"
+      ) +
+      theme_minimal() +
+      theme(plot.title = element_text(size = 18))
+  })
+}
+
+# Jalankan aplikasi
+shinyApp(ui = ui, server = server)
+```
+
+
